@@ -1,101 +1,89 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 
-const key = process.env.FMP_KEY;
-const cache = new Map<string, { data: any; timestamp: number }>();
-const CACHE_DURATION = 5 * 60 * 1000;
-
-async function fetchWithTimeout(url: string, timeout = 5000) {
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeout);
-  try {
-    const response = await fetch(url, { signal: controller.signal });
-    clearTimeout(id);
-    return response;
-  } catch (error) {
-    clearTimeout(id);
-    throw error;
-  }
-}
-
-export async function POST(request: Request) {
-  const { symbols } = await request.json();
-  
-  if (!symbols || !Array.isArray(symbols)) {
-    return NextResponse.json({ error: 'symbols array required' }, { status: 400 });
-  }
-
-  const results: any = {};
-  
-  for (const symbol of symbols) {
-    const cached = cache.get(symbol);
-    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
-      results[symbol] = { ...cached.data, fromCache: true };
-    } else {
-      results[symbol] = null;
-    }
-  }
-
-  return NextResponse.json(results);
-}
+const FMP_KEY = process.env.FMP_KEY;
+const FMP_BASE = 'https://financialmodelingprep.com/stable';
 
 export async function GET(
-  request: Request,
+  request: NextRequest,
   { params }: { params: { symbol: string } }
 ) {
-  const { symbol } = params;
+  const symbol = params.symbol;
 
-  const cached = cache.get(symbol);
-  if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
-    return NextResponse.json({ ...cached.data, fromCache: true });
-  }
-
-  if (!key) {
-    return NextResponse.json({ error: 'API key not configured' }, { status: 500 });
+  if (!FMP_KEY) {
+    return NextResponse.json(
+      { error: 'FMP API key not configured' },
+      { status: 500 }
+    );
   }
 
   try {
-    const [incomeRes, balanceRes, profileRes, metricsRes] = await Promise.all([
-      fetchWithTimeout(`https://financialmodelingprep.com/stable/income-statement?symbol=${symbol}&apikey=${key}`),
-      fetchWithTimeout(`https://financialmodelingprep.com/stable/balance-sheet-statement?symbol=${symbol}&apikey=${key}`),
-      fetchWithTimeout(`https://financialmodelingprep.com/stable/profile?symbol=${symbol}&apikey=${key}`),
-      fetchWithTimeout(`https://financialmodelingprep.com/api/v3/key-metrics?symbol=${symbol}&apikey=${key}`)
-    ]);
+    const profileRes = await fetch(
+      `${FMP_BASE}/profile?symbol=${symbol}&apikey=${FMP_KEY}`
+    );
+    
+    if (!profileRes.ok) {
+      return NextResponse.json(
+        { error: 'Failed to fetch company profile' },
+        { status: 500 }
+      );
+    }
 
-    const income = await incomeRes.json();
-    const balance = await balanceRes.json();
-    const profile = await profileRes.json();
-    const metrics = await metricsRes.json();
+    const profileData = await profileRes.json();
 
-    // trying multiple sources because fmp doesnt always return shares in same field
-    let shares = 
-      profile[0]?.sharesOutstanding || 
-      metrics[0]?.sharesOutstanding ||
-      income[0]?.weightedAverageShsOut ||
-      income[0]?.weightedAverageShsOutDil ||
-      (profile[0]?.mktCap && profile[0]?.price ? profile[0].mktCap / profile[0].price : null);
+    if (!profileData || profileData.length === 0 || profileData.error) {
+      return NextResponse.json(
+        { error: 'Company not found' },
+        { status: 404 }
+      );
+    }
 
-    if (!shares || shares < 1e6) {
-      return NextResponse.json({ 
-        error: 'Invalid share count from API',
-        symbol 
-      }, { status: 500 });
+    const profile = profileData[0];
+    
+    if (!profile) {
+      return NextResponse.json(
+        { error: 'Invalid API response' },
+        { status: 500 }
+      );
+    }
+
+    // Fetch financial statements
+    const incomeRes = await fetch(
+      `${FMP_BASE}/income-statement?symbol=${symbol}&limit=1&apikey=${FMP_KEY}`
+    );
+    const incomeData = await incomeRes.json();
+
+    const balanceRes = await fetch(
+      `${FMP_BASE}/balance-sheet-statement?symbol=${symbol}&limit=1&apikey=${FMP_KEY}`
+    );
+    const balanceData = await balanceRes.json();
+
+    const income = incomeData[0] || {};
+    const balance = balanceData[0] || {};
+
+    // Calculate shares with multiple fallbacks
+    let shares = profile.sharesOutstanding || 0;
+    if (!shares && income.weightedAverageShsOut) {
+      shares = income.weightedAverageShsOut;
+    }
+    if (!shares && profile.mktCap && profile.price) {
+      shares = profile.mktCap / profile.price;
     }
 
     const data = {
-      symbol,
-      name: profile[0]?.companyName || symbol,
-      revenue: income[0]?.revenue || 0,
+      symbol: symbol,
+      name: profile.companyName || symbol,
+      revenue: income.revenue || 0,
       shares: shares,
-      cash: balance[0]?.cashAndCashEquivalents || 0,
-      debt: balance[0]?.totalDebt || 0,
+      cash: balance.cashAndCashEquivalents || 0,
+      debt: balance.totalDebt || balance.longTermDebt || 0,
     };
 
-    cache.set(symbol, { data, timestamp: Date.now() });
     return NextResponse.json(data);
   } catch (error) {
-    return NextResponse.json({ 
-      error: 'API request failed',
-      symbol 
-    }, { status: 500 });
+    return NextResponse.json(
+      { error: 'Failed to fetch company data' },
+      { status: 500 }
+    );
   }
 }
+

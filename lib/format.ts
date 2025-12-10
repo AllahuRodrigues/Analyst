@@ -1,5 +1,7 @@
 // auto scaling to keep numbers readable instead of showing 1234567890
-export function formatNumber(num: number, decimals: number = 2): string {
+export function formatNumber(num: number | undefined | null, decimals: number = 2): string {
+  if (num === undefined || num === null || isNaN(num)) return 'N/A';
+  
   const absNum = Math.abs(num);
   const sign = num < 0 ? '-' : '';
   
@@ -19,7 +21,9 @@ export function formatNumber(num: number, decimals: number = 2): string {
 }
 
 // forcing billions format for consistency in valuation tables
-export function formatBillions(num: number, decimals: number = 2): string {
+export function formatBillions(num: number | undefined | null, decimals: number = 2): string {
+  if (num === undefined || num === null || isNaN(num)) return 'N/A';
+  
   const absNum = Math.abs(num);
   const sign = num < 0 ? '-' : '';
   
@@ -29,7 +33,9 @@ export function formatBillions(num: number, decimals: number = 2): string {
   return `${sign}$${(Math.abs(num) / 1e9).toFixed(decimals)} B`;
 }
 
-export function formatWithCommas(num: number, decimals: number = 2): string {
+export function formatWithCommas(num: number | undefined | null, decimals: number = 2): string {
+  if (num === undefined || num === null || isNaN(num)) return 'N/A';
+  
   return num.toLocaleString('en-US', {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
@@ -37,7 +43,9 @@ export function formatWithCommas(num: number, decimals: number = 2): string {
 }
 
 // no dollar sign for share counts
-export function formatShares(num: number, decimals: number = 2): string {
+export function formatShares(num: number | undefined | null, decimals: number = 2): string {
+  if (num === undefined || num === null || isNaN(num)) return 'N/A';
+  
   const absNum = Math.abs(num);
   const sign = num < 0 ? '-' : '';
   
@@ -56,6 +64,8 @@ export function formatShares(num: number, decimals: number = 2): string {
   return Math.abs(num).toFixed(decimals);
 }
 
-export function formatPercent(num: number, decimals: number = 1): string {
+export function formatPercent(num: number | undefined | null, decimals: number = 1): string {
+  if (num === undefined || num === null || isNaN(num)) return 'N/A';
+  
   return `${(num * 100).toFixed(decimals)}%`;
 }
