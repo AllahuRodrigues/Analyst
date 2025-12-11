@@ -96,36 +96,21 @@ export default function LoginPage() {
           return;
         }
       } else {
-        // Try verifyOtp with code directly (for non-PKCE flows)
+        // Non-PKCE code - try using verifyOtp with token_hash (for email verification links)
         const { data, error } = await supabase.auth.verifyOtp({
-          token: code,
+          token_hash: code,
           type: 'email',
         });
 
         if (error) {
-          // Try with token_hash instead
-          const { data: data2, error: error2 } = await supabase.auth.verifyOtp({
-            token_hash: code,
-            type: 'email',
-          });
+          console.error('Verification error:', error);
+          setSuccessMessage('This verification link has expired or been used. Please try logging in - your email may already be verified.');
+          setError(''); // Clear error
+          setLoading(false);
+          return;
+        }
 
-          if (error2) {
-            console.error('Verification error:', error2);
-            setSuccessMessage('This verification link has expired or been used. Please try logging in - your email may already be verified.');
-            setError(''); // Clear error
-            setLoading(false);
-            return;
-          }
-
-          if (data2?.session) {
-            setSuccessMessage('Email verified successfully! Redirecting to dashboard...');
-            setError(''); // Clear any errors
-            setTimeout(() => {
-              window.location.href = '/dashboard';
-            }, 500);
-            return;
-          }
-        } else if (data?.session) {
+        if (data?.session) {
           setSuccessMessage('Email verified successfully! Redirecting to dashboard...');
           setError(''); // Clear any errors
           setTimeout(() => {
