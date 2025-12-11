@@ -4,6 +4,7 @@ export const config = {
   api: {
     bodyParser: false,
     responseLimit: false,
+    externalResolver: true,
   },
 };
 
@@ -43,26 +44,71 @@ export default async function handler(req, res) {
     
     const form = formidable({
       maxFileSize: 50 * 1024 * 1024,
+      keepExtensions: true,
+      allowEmptyFiles: false,
+      multiples: false,
     });
 
-        // Wrap form.parse so handler doesn't return before parsing completes
-    await new Promise((resolve, reject) => {
+    // Wrap form.parse so handler doesn't return before parsing completes
+    await new Promise((resolve) => {
       form.parse(req, async (err, fields, files) => {
         if (err) {
-          res.status(400).json({ error: 'Failed to parse form' });
+          console.error('Formidable parsing error:', err);
+          if (!res.headersSent) {
+            // Handle specific formidable errors
+            let errorMessage = 'Failed to upload file';
+            if (err.message) {
+              if (err.message.includes('maxFileSize')) {
+                errorMessage = 'File too large. Maximum size is 50MB.';
+              } else if (err.message.includes('pattern') || err.message.includes('string')) {
+                errorMessage = 'Invalid file format. Please upload a PDF file.';
+              } else {
+                errorMessage = err.message;
+              }
+            }
+            
+            res.status(400).json({ 
+              success: false,
+              error: errorMessage,
+              details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+            });
+          }
           return resolve();
         }
 
         try {
-        const file = files.file?.[0] || files.file;
+        // Handle both array and single file formats from formidable
+        const file = Array.isArray(files.file) ? files.file[0] : files.file;
         
-        if (!file) {
-          return res.status(400).json({ error: 'No file provided' });
+        if (!file || !file.filepath) {
+          if (!res.headersSent) {
+            res.status(400).json({ 
+              success: false,
+              error: 'No file provided or file upload failed' 
+            });
+          }
+          return resolve();
         }
 
         tempFilePath = file.filepath;
-        const fileBuffer = fs.readFileSync(file.filepath);
+        
+        // Verify file exists and is readable
+        if (!fs.existsSync(tempFilePath)) {
+          throw new Error('Uploaded file not found on server');
+        }
+        
+        const fileBuffer = fs.readFileSync(tempFilePath);
+        if (!fileBuffer || fileBuffer.length === 0) {
+          throw new Error('Uploaded file is empty');
+        }
+        
         const fileName = file.originalFilename || file.newFilename || 'document.pdf';
+        
+        // Verify it's a PDF
+        if (!fileName.toLowerCase().endsWith('.pdf')) {
+          throw new Error('Only PDF files are supported');
+        }
+        
         const fileBlob = new Blob([fileBuffer], { type: 'application/pdf' });
         Object.defineProperty(fileBlob, 'name', { value: fileName });
 
@@ -255,11 +301,13 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
+    console.error('Parse API top-level error:', error);
     // Always return a response
     if (!res.headersSent) {
       return res.status(500).json({
         success: false,
-        error: error.message || 'Server error'
+        error: error.message || 'Server error',
+        details: process.env.NODE_ENV === 'development' ? error.stack : undefined
       });
     }
   }

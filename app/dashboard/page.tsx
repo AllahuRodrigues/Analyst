@@ -416,6 +416,13 @@ export default function DashboardPage() {
 
       setParseProgress('Processing response...');
 
+      // Check if response is actually JSON
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        const text = await response.text();
+        throw new Error(`Server returned non-JSON response: ${text.substring(0, 200)}`);
+      }
+
       const result = await response.json();
 
       if (!response.ok || !result.success) {
