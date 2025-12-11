@@ -6,6 +6,8 @@ export const config = {
     responseLimit: false,
     externalResolver: true,
   },
+  // Vercel serverless function timeout - max 60s on Hobby, 300s on Pro
+  maxDuration: 300, // Use maximum available (300s for Pro, will be capped at 60s for Hobby)
 };
 
 // Suppress scribe.js CDN timeouts - they happen when it tries to download fonts, not a real error
@@ -29,7 +31,18 @@ function withTimeout(promise, timeoutMs, errorMsg) {
 }
 
 export default async function handler(req, res) {
+  // Set timeout for the entire request (50s to leave room for response)
+  const requestTimeout = setTimeout(() => {
+    if (!res.headersSent) {
+      res.status(504).json({
+        success: false,
+        error: 'Request timeout - PDF processing took too long. Try a smaller file or text-based PDF.',
+      });
+    }
+  }, 50000); // 50 seconds total timeout
+
   if (req.method !== 'POST') {
+    clearTimeout(requestTimeout);
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
@@ -97,6 +110,14 @@ export default async function handler(req, res) {
           throw new Error('Uploaded file not found on server');
         }
         
+        const fileStats = fs.statSync(tempFilePath);
+        const fileSizeMB = fileStats.size / (1024 * 1024);
+        
+        // Warn about large files (but still process)
+        if (fileSizeMB > 20) {
+          console.warn(`Large file detected: ${fileSizeMB.toFixed(2)}MB - may timeout on serverless`);
+        }
+        
         const fileBuffer = fs.readFileSync(tempFilePath);
         if (!fileBuffer || fileBuffer.length === 0) {
           throw new Error('Uploaded file is empty');
@@ -112,31 +133,22 @@ export default async function handler(req, res) {
         const fileBlob = new Blob([fileBuffer], { type: 'application/pdf' });
         Object.defineProperty(fileBlob, 'name', { value: fileName });
 
-        // OCR init with timeout - scribe.js can hang if CDN is slow
+        // OCR init with timeout - reduce timeout for faster failure on serverless
         try {
           await withTimeout(
             scribe.init({ ocr: true, font: false }),
-            15000,
+            8000, // Reduced from 15s to 8s
             'OCR initialization timed out'
           );
         } catch (initError) {
-          // Try once more with shorter timeout
-          try {
-            await withTimeout(
-              scribe.init({ ocr: true, font: false }),
-              10000,
-              'OCR initialization failed'
-            );
-          } catch (retryError) {
-            // Try text extraction even if OCR init fails (works for text-based PDFs)
-            console.error('OCR init failed, will try text extraction only');
-          }
+          // Skip OCR entirely if init fails - faster for text-based PDFs
+          console.warn('OCR init failed, will try text extraction only');
         }
 
-        // Import PDF with timeout - large files can take a while
+        // Import PDF with timeout - reduce for serverless limits
         await withTimeout(
           scribe.importFiles([fileBlob]),
-          20000,
+          15000, // Reduced from 20s to 15s
           'PDF import timed out'
         );
 
@@ -150,11 +162,15 @@ export default async function handler(req, res) {
         if (skipRec) {
           // Text PDF - extract directly
         } else {
-          // Scanned PDF - need OCR but it's slow, so use timeout
+          // Scanned PDF - limit OCR to first 30 pages for speed on serverless
+          const maxOcrPages = Math.min(scribe.inputData?.numPages || 200, 30);
           try {
             await withTimeout(
-              scribe.recognize({ langs: ['eng'] }),
-              45000, // Reduced from 60s to 45s
+              scribe.recognize({ 
+                langs: ['eng'],
+                pageRange: [0, maxOcrPages - 1] // Only OCR first 30 pages
+              }),
+              30000, // Reduced from 45s to 30s for serverless
               'OCR recognition timed out'
             );
           } catch (ocrError) {
@@ -163,12 +179,12 @@ export default async function handler(req, res) {
           }
         }
 
-        // Extract text from OCR results
+        // Extract text from OCR results - faster timeout for serverless
         let extractedText = '';
         try {
           extractedText = await withTimeout(
             scribe.exportData('txt'),
-            15000,
+            10000, // Reduced from 15s to 10s
             'Text extraction timed out'
           );
         } catch (extractError) {
@@ -194,13 +210,13 @@ export default async function handler(req, res) {
             const ocrData = scribe.data?.ocr || scribe.inputData?.ocr || scribe.data?.pageMetrics;
             
             if (ocrData && Array.isArray(ocrData)) {
-              // Limit pages/lines - financials are always in first ~30 pages, full OCR is too slow
-              const maxPages = Math.min(ocrData.length, 50);
+              // Limit pages/lines even more aggressively for serverless - financials in first 20 pages
+              const maxPages = Math.min(ocrData.length, 20); // Reduced from 50 to 20
               for (let pageIndex = 0; pageIndex < maxPages; pageIndex++) {
                 const page = ocrData[pageIndex];
                 const lines = page?.lines || page?.textLines || [];
                 
-                const maxLines = Math.min(lines.length, 500);
+                const maxLines = Math.min(lines.length, 300); // Reduced from 500 to 300
                 for (let lineIndex = 0; lineIndex < maxLines; lineIndex++) {
                   const line = lines[lineIndex];
                   const words = line?.words || [];
@@ -233,10 +249,10 @@ export default async function handler(req, res) {
         const { AnalystParser, convertToLegacyFormat } = await import('../../lib/parser.ts');
         const parser = new AnalystParser(extractedText, ocrWords.length > 0 ? ocrWords : undefined);
         
-        // Parser timeout - shouldn't take long but protect against edge cases
+        // Parser timeout - reduce for serverless function limits
         const data = await withTimeout(
           parser.parse(),
-          30000,
+          15000, // Reduced from 30s to 15s - parser should be fast
           'Financial data parsing timed out'
         );
         const parsedData = convertToLegacyFormat(data);
@@ -256,17 +272,20 @@ export default async function handler(req, res) {
             // Ignore cleanup errors
           }
 
-          res.status(200).json({
-            success: true,
-            data: parsedData,
-            advanced: data,
-            meta: {
-              text_length: extractedText.length,
-              ocr_words: ocrWords.length,
-              tables_detected: data.tables_detected.length,
-              validation_warnings: data.validation_warnings.length,
-            }
-          });
+          clearTimeout(requestTimeout);
+          if (!res.headersSent) {
+            res.status(200).json({
+              success: true,
+              data: parsedData,
+              advanced: data,
+              meta: {
+                text_length: extractedText.length,
+                ocr_words: ocrWords.length,
+                tables_detected: data.tables_detected.length,
+                validation_warnings: data.validation_warnings.length,
+              }
+            });
+          }
           resolve();
 
         } catch (error) {
@@ -287,13 +306,22 @@ export default async function handler(req, res) {
             // Ignore
           }
 
+          clearTimeout(requestTimeout);
           // Always return a response
           if (!res.headersSent) {
-            res.status(500).json({
-              success: false,
-              error: error.message || 'PDF parsing failed',
-              details: process.env.NODE_ENV === 'development' ? error.stack : undefined
-            });
+            // Check if it's a timeout error
+            if (error.message && error.message.includes('timeout')) {
+              res.status(504).json({
+                success: false,
+                error: 'PDF processing timed out. The file may be too large or complex. Try uploading a smaller file or a text-based PDF.',
+              });
+            } else {
+              res.status(500).json({
+                success: false,
+                error: error.message || 'PDF parsing failed',
+                details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+              });
+            }
           }
           resolve();
         }
@@ -301,9 +329,17 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
+    clearTimeout(requestTimeout);
     console.error('Parse API top-level error:', error);
     // Always return a response
     if (!res.headersSent) {
+      // Check if it's a timeout or forbidden error (Vercel timeout)
+      if (error.message && (error.message.includes('timeout') || error.message.includes('Forbidden'))) {
+        return res.status(504).json({
+          success: false,
+          error: 'Request timed out - PDF processing exceeded server limits. Try a smaller file or contact support.',
+        });
+      }
       return res.status(500).json({
         success: false,
         error: error.message || 'Server error',

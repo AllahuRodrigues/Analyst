@@ -401,9 +401,9 @@ export default function DashboardPage() {
 
       setParseProgress('Uploading file and initializing...');
 
-      // Add timeout to fetch (120 seconds total)
+      // Add timeout to fetch (50 seconds to match server timeout)
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 120000); // 2 minutes timeout
+      const timeoutId = setTimeout(() => controller.abort(), 50000); // 50 seconds timeout
 
       const response = await fetch('/api/parse', {
         method: 'POST',
@@ -420,7 +420,26 @@ export default function DashboardPage() {
       const contentType = response.headers.get('content-type');
       if (!contentType || !contentType.includes('application/json')) {
         const text = await response.text();
+        // Check for Vercel timeout/forbidden errors
+        if (text.includes('Forbidden') || text.includes('timeout')) {
+          throw new Error('Request timed out - PDF processing exceeded server limits. The file may be too large. Try uploading a smaller file or a text-based PDF.');
+        }
         throw new Error(`Server returned non-JSON response: ${text.substring(0, 200)}`);
+      }
+      
+      // Handle non-OK responses
+      if (!response.ok) {
+        // Try to parse error JSON first
+        try {
+          const errorData = await response.json();
+          throw new Error(errorData.error || `Server error: ${response.status}`);
+        } catch (e) {
+          // If not JSON, use status text
+          if (response.status === 504 || response.status === 403) {
+            throw new Error('Request timed out - PDF processing exceeded server limits. Try a smaller file or text-based PDF.');
+          }
+          throw new Error(`Server error: ${response.status} ${response.statusText}`);
+        }
       }
 
       const result = await response.json();
@@ -442,9 +461,11 @@ export default function DashboardPage() {
       console.error('Error uploading file:', error);
       
       if (error.name === 'AbortError') {
-        setParseError('Request timed out after 2 minutes. The document may be too large or complex. Please try a smaller file or contact support.');
+        setParseError('Request timed out - PDF processing exceeded server limits. The file may be too large or complex. Please try a smaller file or a text-based PDF.');
+      } else if (error.message && (error.message.includes('Forbidden') || error.message.includes('timeout'))) {
+        setParseError('Request timed out - PDF processing exceeded server limits. Try uploading a smaller file, a text-based PDF, or contact support.');
       } else {
-      setParseError(error.message || 'Failed to parse document. Please try again.');
+        setParseError(error.message || 'Failed to parse document. Please try again.');
       }
     } finally {
       setParsing(false);

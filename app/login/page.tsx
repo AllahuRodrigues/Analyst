@@ -34,10 +34,17 @@ export default function LoginPage() {
     const message = params.get('message');
     let code = params.get('code'); // Email verification code from query params
     
-    // Also check hash fragment (Supabase often uses this for PKCE)
-    if (!code && window.location.hash) {
+    // Check hash fragment for access_token (magic link / email verification)
+    let accessToken: string | null = null;
+    let refreshToken: string | null = null;
+    let type: string | null = null;
+    
+    if (window.location.hash) {
       const hashParams = new URLSearchParams(window.location.hash.substring(1));
-      code = hashParams.get('code') || hashParams.get('access_token');
+      accessToken = hashParams.get('access_token');
+      refreshToken = hashParams.get('refresh_token');
+      type = hashParams.get('type');
+      code = hashParams.get('code') || code; // Fallback to code if no access_token
     }
     
     if (errorMsg) {
@@ -50,8 +57,12 @@ export default function LoginPage() {
       setError('');
     }
     
-    // Handle email verification code first (only once)
-    if (code) {
+    // Handle email verification - prioritize access_token from hash (magic link)
+    if (accessToken && refreshToken && type === 'magiclink') {
+      handleMagicLinkVerification(accessToken, refreshToken);
+      // Clean URL after handling
+      window.history.replaceState({}, '', '/login');
+    } else if (code) {
       handleEmailVerification(code);
       // Clean URL after handling code
       window.history.replaceState({}, '', '/login');
@@ -62,10 +73,55 @@ export default function LoginPage() {
     }
   }, []);
 
+  // Handle magic link verification (access_token in hash)
+  const handleMagicLinkVerification = async (accessToken: string, refreshToken: string) => {
+    setLoading(true);
+    setError('');
+    setSuccessMessage('');
+    
+    try {
+      const { data, error } = await supabase.auth.setSession({
+        access_token: accessToken,
+        refresh_token: refreshToken,
+      });
+
+      if (error) {
+        console.error('Magic link verification error:', error);
+        if (error.message.includes('expired') || error.message.includes('invalid')) {
+          setSuccessMessage('This verification link has expired or been used. Please try logging in - your email may already be verified.');
+          setError('');
+        } else {
+          setError(`Verification failed: ${error.message}. Please try logging in.`);
+          setSuccessMessage('');
+        }
+        setLoading(false);
+        return;
+      }
+
+      // Verification successful, redirect to dashboard
+      if (data.session) {
+        setSuccessMessage('Email verified successfully! Redirecting to dashboard...');
+        setError('');
+        setTimeout(() => {
+          window.location.href = '/dashboard';
+        }, 500);
+      } else {
+        setSuccessMessage('Email verified successfully! You can now login.');
+        setError('');
+        setLoading(false);
+      }
+    } catch (error: any) {
+      console.error('Magic link verification error:', error);
+      setSuccessMessage('This verification link may have expired. Please try logging in - your email may already be verified.');
+      setError('');
+      setLoading(false);
+    }
+  };
+
   const handleEmailVerification = async (code: string) => {
     setLoading(true);
     setError('');
-    setSuccessMessage(''); // Clear any existing success message
+    setSuccessMessage('');
     
     try {
       // Handle PKCE code (starts with pkce_) - used for email verification
@@ -74,29 +130,27 @@ export default function LoginPage() {
 
         if (error) {
           console.error('Verification error:', error);
-          // If it's an expired/invalid code, just show message to login
           if (error.message.includes('expired') || error.message.includes('invalid')) {
             setSuccessMessage('This verification link has expired or been used. Please try logging in - your email may already be verified.');
-            setError(''); // Clear error
+            setError('');
           } else {
             setError(`Verification failed: ${error.message}. Please try logging in.`);
-            setSuccessMessage(''); // Clear success
+            setSuccessMessage('');
           }
           setLoading(false);
           return;
         }
 
-        // Verification successful, redirect to dashboard
         if (data.session) {
           setSuccessMessage('Email verified successfully! Redirecting to dashboard...');
-          setError(''); // Clear any errors
+          setError('');
           setTimeout(() => {
             window.location.href = '/dashboard';
           }, 500);
           return;
         }
       } else {
-        // Non-PKCE code - try using verifyOtp with token_hash (for email verification links)
+        // Try verifyOtp with token_hash for older email verification format
         const { data, error } = await supabase.auth.verifyOtp({
           token_hash: code,
           type: 'email',
@@ -105,14 +159,14 @@ export default function LoginPage() {
         if (error) {
           console.error('Verification error:', error);
           setSuccessMessage('This verification link has expired or been used. Please try logging in - your email may already be verified.');
-          setError(''); // Clear error
+          setError('');
           setLoading(false);
           return;
         }
 
         if (data?.session) {
           setSuccessMessage('Email verified successfully! Redirecting to dashboard...');
-          setError(''); // Clear any errors
+          setError('');
           setTimeout(() => {
             window.location.href = '/dashboard';
           }, 500);
@@ -122,12 +176,12 @@ export default function LoginPage() {
 
       // If we get here, verification succeeded but no session
       setSuccessMessage('Email verified successfully! You can now login.');
-      setError(''); // Clear any errors
+      setError('');
       setLoading(false);
     } catch (error: any) {
       console.error('Verification error:', error);
       setSuccessMessage('This verification link may have expired. Please try logging in - your email may already be verified.');
-      setError(''); // Clear any errors
+      setError('');
       setLoading(false);
     }
   };

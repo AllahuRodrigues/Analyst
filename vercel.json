@@ -1,0 +1,8 @@
+{
+  "functions": {
+    "pages/api/parse.js": {
+      "maxDuration": 300
+    }
+  }
+}
+
