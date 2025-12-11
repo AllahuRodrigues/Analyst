@@ -7,21 +7,17 @@ export const config = {
   },
 };
 
-// Suppress scribe.js CDN timeout errors
+// Suppress scribe.js CDN timeouts - they happen when it tries to download fonts, not a real error
 if (typeof process !== 'undefined') {
   const originalListeners = process.listeners('uncaughtException');
   process.removeAllListeners('uncaughtException');
   process.on('uncaughtException', (error) => {
-    // Suppress ETIMEDOUT from scribe.js CDN downloads
     if (error.code === 'ETIMEDOUT' && error.syscall === 'write') {
-      return; // Silently ignore
+      return;
     }
-    // Re-throw other errors
     originalListeners.forEach(listener => listener(error));
   });
 }
-
-// Helper to add timeout to promises
 function withTimeout(promise, timeoutMs, errorMsg) {
   return Promise.race([
     promise,
@@ -49,7 +45,7 @@ export default async function handler(req, res) {
       maxFileSize: 50 * 1024 * 1024,
     });
 
-    // Wrap form.parse in a Promise to ensure handler waits
+        // Wrap form.parse so handler doesn't return before parsing completes
     await new Promise((resolve, reject) => {
       form.parse(req, async (err, fields, files) => {
         if (err) {
@@ -70,26 +66,31 @@ export default async function handler(req, res) {
         const fileBlob = new Blob([fileBuffer], { type: 'application/pdf' });
         Object.defineProperty(fileBlob, 'name', { value: fileName });
 
-        // Initialize OCR with timeout (30s) and suppress external resource errors
+        // OCR init with timeout - scribe.js can hang if CDN is slow
         try {
           await withTimeout(
             scribe.init({ ocr: true, font: false }),
-            30000,
+            15000,
             'OCR initialization timed out'
           );
         } catch (initError) {
-          // Retry without font downloads to avoid CDN timeouts
-          await withTimeout(
-            scribe.init({ ocr: true, font: false }),
-            10000,
-            'OCR initialization failed'
-          );
+          // Try once more with shorter timeout
+          try {
+            await withTimeout(
+              scribe.init({ ocr: true, font: false }),
+              10000,
+              'OCR initialization failed'
+            );
+          } catch (retryError) {
+            // Try text extraction even if OCR init fails (works for text-based PDFs)
+            console.error('OCR init failed, will try text extraction only');
+          }
         }
 
-        // Import files with timeout (30s)
+        // Import PDF with timeout - large files can take a while
         await withTimeout(
           scribe.importFiles([fileBlob]),
-          30000,
+          20000,
           'PDF import timed out'
         );
 
@@ -97,64 +98,101 @@ export default async function handler(req, res) {
           throw new Error('Failed to import PDF file');
         }
 
-        // Run OCR if needed with timeout (60s for recognition)
+        // Skip OCR for text-based PDFs - huge time saver (30-60 seconds)
         const skipRec = scribe.inputData.pdfMode && scribe.inputData.pdfType === 'text';
-        if (!skipRec) {
-          await withTimeout(
-            scribe.recognize({ langs: ['eng'] }),
-            60000,
-            'OCR recognition timed out'
-          );
+        
+        if (skipRec) {
+          // Text PDF - extract directly
+        } else {
+          // Scanned PDF - need OCR but it's slow, so use timeout
+          try {
+            await withTimeout(
+              scribe.recognize({ langs: ['eng'] }),
+              45000, // Reduced from 60s to 45s
+              'OCR recognition timed out'
+            );
+          } catch (ocrError) {
+            // OCR failed but try to continue - parser might work with partial data
+            console.warn('OCR recognition failed or timed out, continuing with available data');
+          }
         }
 
-        // Extract text with timeout (10s)
-        const extractedText = await withTimeout(
-          scribe.exportData('txt'),
-          10000,
-          'Text extraction timed out'
-        );
+        // Extract text from OCR results
+        let extractedText = '';
+        try {
+          extractedText = await withTimeout(
+            scribe.exportData('txt'),
+            15000,
+            'Text extraction timed out'
+          );
+        } catch (extractError) {
+          // Fallback: try alternate data sources if export fails
+          if (scribe.inputData?.text) {
+            extractedText = scribe.inputData.text;
+          } else if (scribe.data?.text) {
+            extractedText = scribe.data.text;
+          } else {
+            throw new Error('Failed to extract text from PDF');
+          }
+        }
+        
+        if (!extractedText || extractedText.trim().length === 0) {
+          throw new Error('No text could be extracted from the PDF. The file may be image-only or corrupted.');
+        }
 
-        // Extract position data
+        // Extract OCR word positions - optional but helps with row-by-row parsing
         const ocrWords = [];
         try {
-          const ocrData = scribe.data?.ocr || scribe.inputData?.ocr || scribe.data?.pageMetrics;
-          
-          if (ocrData && Array.isArray(ocrData)) {
-            for (let pageIndex = 0; pageIndex < ocrData.length; pageIndex++) {
-              const page = ocrData[pageIndex];
-              const lines = page?.lines || page?.textLines || [];
-              
-              for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-                const line = lines[lineIndex];
-                const words = line?.words || [];
+          // Position data only exists if OCR ran (text PDFs don't have it)
+          if (!skipRec) {
+            const ocrData = scribe.data?.ocr || scribe.inputData?.ocr || scribe.data?.pageMetrics;
+            
+            if (ocrData && Array.isArray(ocrData)) {
+              // Limit pages/lines - financials are always in first ~30 pages, full OCR is too slow
+              const maxPages = Math.min(ocrData.length, 50);
+              for (let pageIndex = 0; pageIndex < maxPages; pageIndex++) {
+                const page = ocrData[pageIndex];
+                const lines = page?.lines || page?.textLines || [];
                 
-                for (const word of words) {
-                  if (word && word.text) {
-                    ocrWords.push({
-                      text: word.text,
-                      bbox: {
-                        x: word.bbox?.left || word.left || 0,
-                        y: word.bbox?.top || word.top || 0,
-                        width: ((word.bbox?.right || word.right || 0) - (word.bbox?.left || word.left || 0)),
-                        height: ((word.bbox?.bottom || word.bottom || 0) - (word.bbox?.top || word.top || 0)),
-                      },
-                      confidence: word.confidence || 80,
-                      line: lineIndex,
-                      page: pageIndex,
-                    });
+                const maxLines = Math.min(lines.length, 500);
+                for (let lineIndex = 0; lineIndex < maxLines; lineIndex++) {
+                  const line = lines[lineIndex];
+                  const words = line?.words || [];
+                  
+                  for (const word of words) {
+                    if (word && word.text) {
+                      ocrWords.push({
+                        text: word.text,
+                        bbox: {
+                          x: word.bbox?.left || word.left || 0,
+                          y: word.bbox?.top || word.top || 0,
+                          width: ((word.bbox?.right || word.right || 0) - (word.bbox?.left || word.left || 0)),
+                          height: ((word.bbox?.bottom || word.bottom || 0) - (word.bbox?.top || word.top || 0)),
+                        },
+                        confidence: word.confidence || 80,
+                        line: lineIndex,
+                        page: pageIndex,
+                      });
+                    }
                   }
                 }
               }
             }
           }
         } catch (e) {
-          // Position data unavailable
+          // No position data - parser falls back to pure text extraction
         }
 
-        // Parse financial data
+        // Run financial parser (regex + row-by-row table reading)
         const { AnalystParser, convertToLegacyFormat } = await import('../../lib/parser.ts');
-        const parser = new AnalystParser(extractedText, ocrWords);
-        const data = await parser.parse();
+        const parser = new AnalystParser(extractedText, ocrWords.length > 0 ? ocrWords : undefined);
+        
+        // Parser timeout - shouldn't take long but protect against edge cases
+        const data = await withTimeout(
+          parser.parse(),
+          30000,
+          'Financial data parsing timed out'
+        );
         const parsedData = convertToLegacyFormat(data);
 
         // Cleanup

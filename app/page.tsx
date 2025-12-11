@@ -27,7 +27,7 @@ export default function LandingPage() {
           transition={{ duration: 0.5, delay: 0.4 }}
           className="text-2xl md:text-3xl text-gray-400 mb-4"
         >
-          for Investment Banking
+          Financial Document Analysis Platform
         </motion.p>
         
         <motion.p

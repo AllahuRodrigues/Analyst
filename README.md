@@ -1,4 +1,4 @@
-# DCF Valuation App
+# The Analyst
 
 Started working on this November 10th, 05:43pm, for Zev's online assessment,to be used to value FAANG companies using a DCF model. Basically you can see if apple (amazon, google, meta, etc...) is overpriced or underpriced based on their cash flows.
 
@@ -127,12 +127,51 @@ npm run dev
 ```
 4. go to `localhost:3000`
 
+## the dashboard
+
+users will be able to upload their own SEC filings and get structured data out, the main flow is:
+
+1. **upload a PDF** - any 10-K or 10-Q filing
+2. **parser extracts financials** - reads tables row-by-row, finds labels, gets values from same row (horizontal reading instead of picking first number)
+3. **view all parsed data** - see everything it found: metadata, income statement, balance sheet, cash flow, with confidence scores and page numbers
+4. **run DCF analysis** - use the extracted data to build a DCF model right there
+5. **save to sessions** - link documents to analysis sessions so you can ask questions later
+
+### why the parser works row-by-row
+
+SEC filings have financial tables where labels are in column 1 and values in columns 2+. if you just search for "Total Revenue" and grab the first number, you might get a footnote or the wrong period. instead, i:
+
+- detect table structure from OCR positions
+- find the label on a row
+- read horizontally to get the value from the same row
+- prioritize consolidated statements over notes/footnotes
+
+this gives way better accuracy because i'm matching labels to their actual values instead of hoping the first number found is the right one.
+
+### document management
+
+every uploaded PDF gets saved to your account (stored in supabase). you can:
+- see all your documents
+- delete ones you don't need
+- link documents to sessions for analysis
+
+### sessions
+
+sessions are basically workspaces where you can:
+- attach a document
+- run DCF calculations
+- save results
+- (eventually) ask questions about the document
+
+i built this because financial analysis is iterative - you upload a 10-K, extract data, build a model, tweak assumptions, ask questions, etc. sessions let you keep all that work organized.
+
 ## limitations
 
 - FMP free tier = 250 calls/day (caching helps but you'll still hit it eventually)
 - only works for companies FMP has data for (so FAANG + most US large caps)
 - shares outstanding can still be wrong for some tickers if FMP data is stale
 - DCF assumes steady growth which is never true in real life
+- parser works best on text-based PDFs (scanned PDFs need OCR which is slow)
 
 ---
 

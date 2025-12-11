@@ -44,7 +44,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
-        <title>DCF Valuation Tool - Financial Modeling for IB</title>
+        <title>Analyst</title>
         <meta name="description" content="Professional financial modeling and DCF valuation tools for investment banking" />
       </head>
       <body className="bg-black">

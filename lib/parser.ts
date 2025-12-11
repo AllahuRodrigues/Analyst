@@ -1,5 +1,5 @@
-// Advanced Financial Document Parser with Computer Vision & Position-Aware OCR
-// Built entirely with local CV/OCR - no external AI APIs
+// Financial document parser - extracts structured data from SEC 10-K/10-Q filings
+// Uses OCR position data to read tables row-by-row instead of picking first numbers
 
 export interface BoundingBox {
   x: number;
@@ -115,32 +115,27 @@ export class AnalystParser {
     this.words = ocrWords || [];
   }
 
-  // Main parsing pipeline
   public async parse(): Promise<AdvancedFinancialDocumentSchema> {
     this.log = [];
     this.logStep('Starting advanced financial document parsing');
 
-    // Step 1: Detect document scale
+    // Detect scale first so I can properly multiply values without explicit suffixes
     this.detectDocumentScale();
 
-    // Step 2: Detect and extract tables
+    // Build table structure from OCR positions - this lets me read rows horizontally
     if (this.words.length > 0) {
       this.detectTables();
     }
 
-    // Step 3: Extract metadata
     const metadata = this.extractMetadata();
 
-    // Step 4: Extract financial data with position awareness
+    // Read financials row-by-row: find label, get value from same row
     const financials = this.extractFinancials();
 
-    // Step 4.5: Post-extraction cleanup (reject impossible values)
+    // Reject values that violate basic accounting rules (like liabilities = assets)
     this.cleanupImpossibleValues(financials);
 
-    // Step 5: Validate extracted data
     const validation_warnings = this.validateFinancials(financials, metadata);
-
-    // Step 6: Calculate confidence
     const extraction_confidence = this.calculateConfidence(financials, validation_warnings);
 
     return {
@@ -157,9 +152,9 @@ export class AnalystParser {
     this.log.push(`[${new Date().toISOString()}] ${message}`);
   }
 
-  // ==================== SCALE DETECTION ====================
-  
   private detectDocumentScale() {
+    // Most SEC filings use "(in millions)" but don't put it on every number
+    // Need to detect this upfront so I know whether "$123" means $123M or $123
     const scalePatterns = [
       { pattern: /\((?:in|except per share amounts in)\s+millions\)/i, multiplier: 1000000, unit: 'millions' },
       { pattern: /\(in\s+thousands\)/i, multiplier: 1000, unit: 'thousands' },
@@ -178,12 +173,10 @@ export class AnalystParser {
     this.logStep('No explicit scale found, assuming base units');
   }
 
-  // ==================== TABLE DETECTION ====================
-  
   private detectTables() {
     this.logStep('Detecting tables from position data');
     
-    // Group words by page and line
+    // Group OCR words by line so I can identify table rows (multiple numbers on same line)
     const pages = new Map<number, Map<number, OCRWord[]>>();
     
     for (const word of this.words) {
@@ -197,7 +190,7 @@ export class AnalystParser {
       pageLines.get(word.line)!.push(word);
     }
 
-    // Detect table regions (lines with multiple numeric columns)
+    // A table row has multiple numbers - look for lines with 2+ numeric values
     for (const [pageNum, lines] of pages) {
       const tableRegions = this.findTableRegions(lines, pageNum);
       this.tables.push(...tableRegions);
@@ -217,7 +210,7 @@ export class AnalystParser {
       const lineNum = lineNumbers[i];
       const words = lines.get(lineNum) || [];
       
-      // Check if line has multiple numbers (likely a table row)
+      // Multiple numbers on same line = likely a financial statement row
       const numbers = words.filter(w => /^[\$\(]?[\d,]+[\.\d]*[BMK\)]?$/.test(w.text));
       
       if (numbers.length >= 2) {
@@ -227,7 +220,7 @@ export class AnalystParser {
         }
         currentTable.push(words);
       } else if (currentTable && currentTable.length >= 3) {
-        // End of table region
+        // Found 3+ consecutive rows with numbers - that's a table
         tables.push(this.parseTableFromWords(currentTable, tableStart, pageNum));
         currentTable = null;
       } else {
@@ -239,11 +232,10 @@ export class AnalystParser {
   }
 
   private parseTableFromWords(tableWords: OCRWord[][], startLine: number, pageNum: number): FinancialTable {
-    // Detect column positions
+    // Cluster x-positions to find column boundaries (needed for horizontal row reading)
     const allX = tableWords.flat().map(w => w.bbox.x).sort((a, b) => a - b);
     const columns = this.detectColumnPositions(allX);
 
-    // Build table structure
     const rows: TableCell[][] = [];
     let title = '';
     let type: FinancialTable['type'] = 'unknown';
@@ -265,7 +257,7 @@ export class AnalystParser {
       
       rows.push(row);
 
-      // Detect table type from content
+      // Classify table type so I can prioritize consolidated statements over notes
       if (i === 0) {
         title = lineWords.map(w => w.text).join(' ');
         if (/balance.*sheet/i.test(title)) type = 'balance_sheet';
@@ -287,7 +279,7 @@ export class AnalystParser {
   }
 
   private detectColumnPositions(xPositions: number[]): number[] {
-    // Simple clustering: group x positions within 20px tolerance
+    // Words aligned vertically form columns - cluster x-positions within 20px tolerance
     const columns: number[] = [];
     const tolerance = 20;
 
@@ -325,7 +317,6 @@ export class AnalystParser {
     };
   }
 
-  // ==================== METADATA EXTRACTION ====================
   
   private extractMetadata(): AdvancedFinancialDocumentSchema['metadata'] {
     return {
@@ -341,7 +332,7 @@ export class AnalystParser {
   }
 
   private extractCompanyName(): string {
-    // Look for company name in first 3000 characters
+    // Company name is always near the top - search first 3000 chars to avoid false matches
     const header = this.rawText.substring(0, 3000);
     
     const patterns = [
@@ -359,7 +350,7 @@ export class AnalystParser {
       const match = header.match(pattern);
       if (match && match[1]) {
         const name = match[1].trim().replace(/\s+/g, ' ');
-        // Validate it's not junk
+        // Skip garbage OCR like "OF THE SECURITIES EXCHANGE ACT" being detected as company name
         if (name.length > 3 && name.length < 100 && 
             !/SECURITIES|EXCHANGE|ACT OF|UNITED STATES|WASHINGTON|COMMISSION/i.test(name)) {
           this.logStep(`Extracted company name: ${name}`);
@@ -378,7 +369,7 @@ export class AnalystParser {
   }
 
   private extractDocumentType(): string {
-    // Prioritize first occurrence in first 1000 chars
+    // Earlier occurrences are more likely to be correct (company name appears before footnotes)
     const header = this.rawText.substring(0, 1000);
     
     if (/FORM\s+10-K\b/i.test(header)) {
@@ -448,7 +439,6 @@ export class AnalystParser {
     return '';
   }
 
-  // ==================== FINANCIAL EXTRACTION ====================
   
   private extractFinancials(): AdvancedFinancialDocumentSchema['financials'] {
     this.logStep('Extracting financial fields with multi-strategy approach');
@@ -561,7 +551,7 @@ export class AnalystParser {
       },
     };
 
-    // Derive missing fields using financial relationships
+    // Calculate missing fields from accounting relationships (e.g., equity = assets - liabilities)
     this.deriveMissingFields(financials);
 
     return financials;
@@ -570,54 +560,53 @@ export class AnalystParser {
   private cleanupImpossibleValues(financials: AdvancedFinancialDocumentSchema['financials']) {
     this.logStep('Cleaning up impossible values');
 
-    // Check 1: Total Liabilities should not equal Total Assets (impossible unless equity = 0)
+    // Reject if liabilities ≈ assets (impossible unless equity = 0, which never happens)
     if (financials.assets.total && financials.liabilities.total) {
       const assetVal = financials.assets.total.value;
       const liabVal = financials.liabilities.total.value;
       
       if (Math.abs(assetVal - liabVal) < assetVal * 0.01) {
-        // They're within 1% of each other - likely wrong
-        this.logStep(`⚠️  Total Assets = Total Liabilities ($${(assetVal/1e9).toFixed(1)}B) - rejecting liabilities`);
+        this.logStep(`WARNING: Total Assets = Total Liabilities ($${(assetVal/1e9).toFixed(1)}B) - rejecting liabilities`);
         financials.liabilities.total = undefined;
       }
     }
 
-    // Check 2: Total Assets should be larger than any individual asset component
+    // Reject components that exceed total (e.g., cash > total assets doesn't make sense)
     if (financials.assets.total) {
       const totalAssets = financials.assets.total.value;
       
       if (financials.assets.cash && financials.assets.cash.value > totalAssets) {
-        this.logStep(`⚠️  Cash > Total Assets - rejecting cash value`);
+        this.logStep(`WARNING: Cash > Total Assets - rejecting cash value`);
         financials.assets.cash = undefined;
       }
       
       if (financials.assets.marketable_securities && financials.assets.marketable_securities.value > totalAssets) {
-        this.logStep(`⚠️  Marketable Securities > Total Assets - rejecting`);
+        this.logStep(`WARNING: Marketable Securities > Total Assets - rejecting`);
         financials.assets.marketable_securities = undefined;
       }
     }
 
-    // Check 3: Revenue should be larger than operating income and net income
+    // Reject if operating/net income > revenue (income comes after expenses, can't exceed top line)
     if (financials.revenues.total) {
       const revenue = financials.revenues.total.value;
       
       if (financials.income.operating_income && financials.income.operating_income.value > revenue * 1.2) {
-        this.logStep(`⚠️  Operating Income > Revenue - rejecting operating income`);
+        this.logStep(`WARNING: Operating Income > Revenue - rejecting operating income`);
         financials.income.operating_income = undefined;
       }
       
       if (financials.income.net_income && financials.income.net_income.value > revenue * 1.2) {
-        this.logStep(`⚠️  Net Income > Revenue - rejecting net income`);
+        this.logStep(`WARNING: Net Income > Revenue - rejecting net income`);
         financials.income.net_income = undefined;
       }
     }
 
-    // Check 4: Operating expenses should be reasonable vs revenue
+    // Reject expenses that exceed revenue (R&D can't be more than total revenue)
     if (financials.revenues.total) {
       const revenue = financials.revenues.total.value;
       
       if (financials.expenses.research_development && financials.expenses.research_development.value > revenue) {
-        this.logStep(`⚠️  R&D > Revenue - rejecting R&D`);
+        this.logStep(`WARNING: R&D > Revenue - rejecting R&D`);
         financials.expenses.research_development = undefined;
       }
     }
@@ -626,10 +615,10 @@ export class AnalystParser {
   private deriveMissingFields(financials: AdvancedFinancialDocumentSchema['financials']) {
     this.logStep('Deriving missing fields from financial relationships');
 
-    // Derive equity from assets - liabilities
+    // Calculate equity from balance sheet equation if missing (more reliable than extracting it directly)
     if (!financials.equity.total && financials.assets.total && financials.liabilities.total) {
       const derivedEquity = financials.assets.total.value - financials.liabilities.total.value;
-      if (derivedEquity > 0) { // Only derive if positive
+      if (derivedEquity > 0) {
         financials.equity.total = {
           value: derivedEquity,
           source: 'Derived (Assets - Liabilities)',
@@ -637,15 +626,13 @@ export class AnalystParser {
           page: 0,
           context: 'Calculated from balance sheet',
         };
-        this.logStep(`✓ Derived equity: ${this.formatMoney(derivedEquity)}`);
+        this.logStep(`SUCCESS: Derived equity: ${this.formatMoney(derivedEquity)}`);
       }
     }
 
-    // Derive gross profit from revenue - cost of revenue
+    // Calculate gross profit if not found directly (some filings don't have a gross profit line)
     if (!financials.revenues.gross_profit && financials.revenues.total && financials.revenues.cost_of_revenue) {
       const derivedGrossProfit = financials.revenues.total.value - financials.revenues.cost_of_revenue.value;
-      
-      // Only derive if result is positive and reasonable
       if (derivedGrossProfit > 0 && derivedGrossProfit < financials.revenues.total.value) {
         financials.revenues.gross_profit = {
           value: derivedGrossProfit,
@@ -654,13 +641,13 @@ export class AnalystParser {
           page: 0,
           context: 'Calculated from income statement',
         };
-        this.logStep(`✓ Derived gross profit: ${this.formatMoney(derivedGrossProfit)}`);
+        this.logStep(`SUCCESS: Derived gross profit: ${this.formatMoney(derivedGrossProfit)}`);
       } else {
-        this.logStep(`⚠️  Gross profit calculation failed (negative or > revenue) - likely extraction error in revenue or COGS`);
+        this.logStep(`WARNING: Gross profit calculation failed (negative or > revenue) - likely extraction error in revenue or COGS`);
       }
     }
 
-    // Derive free cash flow from operating CF - capex
+    // Calculate FCF if missing (it's rarely labeled directly in cash flow statements)
     if (financials.cash_flow.operating && financials.cash_flow.capex) {
       const derivedFCF = financials.cash_flow.operating.value - Math.abs(financials.cash_flow.capex.value);
       financials.cash_flow.free_cash_flow = {
@@ -670,7 +657,7 @@ export class AnalystParser {
         page: 0,
         context: 'Calculated from cash flow statement',
       };
-      this.logStep(`✓ Derived free cash flow: ${this.formatMoney(derivedFCF)}`);
+      this.logStep(`SUCCESS: Derived free cash flow: ${this.formatMoney(derivedFCF)}`);
     }
   }
 
@@ -682,41 +669,38 @@ export class AnalystParser {
   ): ExtractionResult | undefined {
     const candidates: ExtractionResult[] = [];
 
-    // Strategy 1: Extract from tables (if available)
+    // Try tables first (higher confidence - structured data) then fall back to raw text
     if (this.tables.length > 0) {
       const tableResults = this.extractFromTables(patterns);
       candidates.push(...tableResults);
     }
 
-    // Strategy 2: Extract from raw text with context
     const textResults = this.extractFromText(patterns, minValue, maxValue);
     candidates.push(...textResults);
 
     if (candidates.length === 0) {
-      this.logStep(`❌ ${fieldName}: No candidates found`);
+      this.logStep(`ERROR: ${fieldName}: No candidates found`);
       return undefined;
     }
 
-    // For critical fields (revenue, assets, liabilities), prefer larger values
+    // For major items (revenue, assets), bigger values are usually correct (footnotes have smaller numbers)
     const isCriticalField = /revenue|assets|liabilities|equity/.test(fieldName);
     
     if (isCriticalField && candidates.length > 1) {
-      // Sort by value (largest first) for critical fields, then by confidence
       candidates.sort((a, b) => {
         const valueDiff = b.value - a.value;
-        if (Math.abs(valueDiff) > a.value * 0.5) { // If values differ significantly
-          return valueDiff; // Prefer larger value
+        if (Math.abs(valueDiff) > a.value * 0.5) {
+          return valueDiff;
         }
-        return b.confidence - a.confidence; // Otherwise prefer higher confidence
+        return b.confidence - a.confidence;
       });
     } else {
-      // For other fields, sort by confidence only
       candidates.sort((a, b) => b.confidence - a.confidence);
     }
     
     const best = candidates[0];
 
-    this.logStep(`✓ ${fieldName}: $${(best.value / 1000000).toFixed(2)}M (confidence: ${best.confidence.toFixed(0)}%)`);
+    this.logStep(`SUCCESS: ${fieldName}: $${(best.value / 1000000).toFixed(2)}M (confidence: ${best.confidence.toFixed(0)}%)`);
 
     return best;
   }
@@ -725,29 +709,54 @@ export class AnalystParser {
     const results: ExtractionResult[] = [];
 
     for (const table of this.tables) {
+      // Read each row left-to-right: find label, then get value from same row
       for (const rowCells of table.rows) {
-        // Check if any cell matches the label pattern
-        const labelCell = rowCells.find(cell => 
-          patterns.some(p => p.test(cell.text))
+        const sortedCells = [...rowCells].sort((a, b) => a.col - b.col);
+        
+        // Label is usually in first column, value in columns after it
+        const labelCellIndex = sortedCells.findIndex(cell => 
+          patterns.some(p => p.test(cell.text.trim()))
         );
 
-        if (labelCell) {
-          // Look for numeric cells in the same row
-          const numericCells = rowCells.filter(cell => 
-            cell.col > labelCell.col && /^[\$\(]?[\d,]+[\.\d]*[BMK\)]?$/.test(cell.text)
-          );
+        if (labelCellIndex !== -1) {
+          const labelCell = sortedCells[labelCellIndex];
+          
+          // Get numeric values from same row after the label (horizontal reading)
+          const numericCells = sortedCells
+            .slice(labelCellIndex + 1)
+            .filter(cell => {
+              const text = cell.text.trim();
+              return /^[\$\(]?[\d,]+(?:\.[\d]+)?\s*[BMK\)]?$/.test(text) || 
+                     /^\(?[\d,]+(?:\.[\d]+)?\)?\s*[BMK]?$/.test(text);
+            });
 
-          for (const numCell of numericCells) {
+          if (numericCells.length > 0) {
+            numericCells.sort((a, b) => a.col - b.col);
+            
+            // Take first number found (leftmost) - that's usually the right column for single-year statements
+            const numCell = numericCells[0];
             const value = this.parseNumber(numCell.text);
+            
             if (value !== null) {
+              // Single number in row = higher confidence (no ambiguity about which column)
+              let confidence = numericCells.length === 1 ? 95 : 90;
+              
+              // Closer to label = more likely to be the right value
+              if (numCell.col - labelCell.col < 3) {
+                confidence += 3;
+              }
+              
               results.push({
                 value,
-                source: `Table: ${table.title || 'Unnamed'} (page ${table.page})`,
-                confidence: 85,
+                source: `Table: ${table.title || 'Unnamed'} (page ${table.page}, row ${rowCells[0]?.row || 0})`,
+                confidence,
                 page: table.page,
                 bbox: numCell.bbox,
-                context: labelCell.text,
+                context: `${labelCell.text} | ${numCell.text}`,
               });
+              
+              // Only take first number from row - multi-column tables have years/periods, I want the main value
+              continue;
             }
           }
         }
@@ -760,11 +769,11 @@ export class AnalystParser {
   private extractFromText(patterns: RegExp[], minValue: number, maxValue: number): ExtractionResult[] {
     const results: ExtractionResult[] = [];
 
-    // First, try to find the consolidated financial statements section
+    // Prioritize consolidated statements - they have the real numbers, not supplementary tables
     const consolidatedSections = [
-      /CONSOLIDATED\s+BALANCE\s+SHEETS?([\s\S]{0,5000}?)(?:See|Notes|The accompanying)/i,
-      /CONSOLIDATED\s+STATEMENTS?\s+OF\s+(?:INCOME|OPERATIONS)([\s\S]{0,5000}?)(?:See|Notes|The accompanying)/i,
-      /CONSOLIDATED\s+STATEMENTS?\s+OF\s+CASH\s+FLOWS?([\s\S]{0,5000}?)(?:See|Notes|The accompanying)/i,
+      /CONSOLIDATED\s+BALANCE\s+SHEETS?([\s\S]{0,10000}?)(?:See|Notes|The accompanying|CONSOLIDATED|$)/i,
+      /CONSOLIDATED\s+STATEMENTS?\s+OF\s+(?:INCOME|OPERATIONS)([\s\S]{0,10000}?)(?:See|Notes|The accompanying|CONSOLIDATED|$)/i,
+      /CONSOLIDATED\s+STATEMENTS?\s+OF\s+CASH\s+FLOWS?([\s\S]{0,10000}?)(?:See|Notes|The accompanying|CONSOLIDATED|$)/i,
     ];
 
     let consolidatedText = '';
@@ -775,51 +784,95 @@ export class AnalystParser {
       }
     }
 
-    // If we found consolidated sections, search there first
+    // Search consolidated section first, fall back to full text if nothing found
     const searchTexts = consolidatedText.length > 500 
       ? [consolidatedText, this.rawText] 
       : [this.rawText];
 
     for (const searchText of searchTexts) {
-      for (const pattern of patterns) {
-        // Look for pattern followed by number within same or next line
-        const searchPattern = new RegExp(
-          pattern.source + '\\s*[\n\\r]*\\s*\\$?\\s*([\\d,]+(?:\\.\\d+)?)\\s*([BMK])?',
-          'gi'
-        );
-        const matches = [...searchText.matchAll(searchPattern)];
+      // Process line-by-line: find label, then number on same line (row reading)
+      const lines = searchText.split(/\r?\n/);
+      
+      for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+        const line = lines[lineIdx];
+        const nextLine = lineIdx < lines.length - 1 ? lines[lineIdx + 1] : '';
         
-        for (const match of matches) {
-          const numberText = match[1];
-          const suffix = match[2];
-          
-          // Build number string for parsing
-          let parseText = numberText;
-          if (suffix) parseText += suffix;
-          
-          const value = this.parseNumber(parseText);
-          if (value !== null && value >= minValue && value <= maxValue) {
-            const context = match[0];
-            let confidence = searchText === consolidatedText ? 85 : 70;
+        for (const pattern of patterns) {
+          if (pattern.test(line)) {
+            // Same-line match is best (label and value on same row)
+            const sameLineNumberMatch = line.match(/[\$\(]?\s*([\d,]+(?:\.[\d]+)?)\s*([BMK])?/g);
             
-            // Boost confidence for larger values (major companies have B-scale numbers)
-            if (value > 10000000000) confidence += 5;
-            
-            // Boost if in a table-like structure
-            if (/\s{2,}/.test(context)) confidence += 3;
-            
-            results.push({
-              value,
-              source: searchText === consolidatedText ? 'Consolidated statement' : 'Text extraction',
-              confidence,
-              page: 0,
-              context: context.substring(0, 150),
-            });
+            if (sameLineNumberMatch && sameLineNumberMatch.length > 0) {
+              // Multiple numbers might be on same line - process each
+              for (const numMatch of sameLineNumberMatch) {
+                const numPattern = /[\$\(]?\s*([\d,]+(?:\.[\d]+)?)\s*([BMK])?/;
+                const numGroups = numMatch.match(numPattern);
+                if (numGroups) {
+                  const numberText = numGroups[1];
+                  const suffix = numGroups[2];
+                  let parseText = numberText;
+                  if (suffix) parseText += suffix;
+                  
+                  const value = this.parseNumber(parseText);
+                  if (value !== null && value >= minValue && value <= maxValue) {
+                    // Same-line matches in consolidated sections are most reliable
+                    let confidence = searchText === consolidatedText ? 90 : 80;
+                    
+                    // Bigger numbers are usually the main values (not footnotes)
+                    if (value > 10000000000) confidence += 5;
+                    
+                    // Tab-separated = structured table row = higher confidence
+                    if (/\t| {3,}/.test(line)) confidence += 5;
+                    
+                    results.push({
+                      value,
+                      source: searchText === consolidatedText ? 'Consolidated statement (same line)' : 'Text extraction (same line)',
+                      confidence,
+                      page: 0,
+                      context: line.substring(0, 200),
+                    });
+                  }
+                }
+              }
+            } else {
+              // Fallback: some filings put value on next line (less ideal but better than nothing)
+              const nextLineNumberMatch = nextLine.match(/[\$\(]?\s*([\d,]+(?:\.[\d]+)?)\s*([BMK])?/);
+              if (nextLineNumberMatch) {
+                const numberText = nextLineNumberMatch[1];
+                const suffix = nextLineNumberMatch[2];
+                let parseText = numberText;
+                if (suffix) parseText += suffix;
+                
+                const value = this.parseNumber(parseText);
+                if (value !== null && value >= minValue && value <= maxValue) {
+                  // Next-line matches are less reliable - could be unrelated number
+                  let confidence = searchText === consolidatedText ? 75 : 65;
+                  
+                  if (value > 10000000000) confidence += 5;
+                  
+                  results.push({
+                    value,
+                    source: searchText === consolidatedText ? 'Consolidated statement (next line)' : 'Text extraction (next line)',
+                    confidence,
+                    page: 0,
+                    context: (line + ' ' + nextLine).substring(0, 200),
+                  });
+                }
+              }
+            }
           }
         }
       }
       
-      // If we found good results in consolidated section, don't search full text
+      // If I found same-line matches in consolidated section, use those (most reliable)
+      if (searchText === consolidatedText && results.length > 0) {
+        const sameLineResults = results.filter(r => r.source.includes('same line') && r.source.includes('Consolidated'));
+        if (sameLineResults.length > 0) {
+          return sameLineResults;
+        }
+      }
+      
+      // Got good results from consolidated section, no need to search full document
       if (searchText === consolidatedText && results.length > 0) {
         break;
       }
@@ -829,11 +882,11 @@ export class AnalystParser {
   }
 
   private parseNumber(text: string): number | null {
-    // Remove formatting but keep parentheses for negative detection
+    // Parentheses mean negative in accounting (e.g., (123) = -123)
     const hasParens = text.includes('(') && text.includes(')');
     let cleaned = text.replace(/[\$,]/g, '').replace(/[()]/g, '').trim();
     
-    // Handle suffix multipliers (explicit in the number)
+    // If number has explicit suffix (B/M/K), use that; otherwise use document scale
     let multiplier = 1;
     let hasExplicitSuffix = false;
     
@@ -850,7 +903,7 @@ export class AnalystParser {
       cleaned = cleaned.replace(/K$/i, '');
       hasExplicitSuffix = true;
     } else {
-      // Apply document scale only if no explicit suffix
+      // No explicit suffix - apply document scale (usually millions)
       multiplier = this.documentScale.multiplier;
     }
 
@@ -858,16 +911,8 @@ export class AnalystParser {
     if (isNaN(num) || num === 0) return null;
 
     const result = num * multiplier;
-
-    // Handle parentheses as negative
-    if (hasParens) {
-      return -result;
-    }
-
-    return result;
+    return hasParens ? -result : result;
   }
-
-  // ==================== VALIDATION ====================
   
   private validateFinancials(
     financials: AdvancedFinancialDocumentSchema['financials'],
@@ -881,8 +926,9 @@ export class AnalystParser {
     const equity = financials.equity.total?.value;
 
     if (assets && liabilities && equity) {
+      // Balance sheet must balance: Assets = Liabilities + Equity (within 5% tolerance for rounding)
       const diff = Math.abs(assets - (liabilities + equity));
-      const tolerance = assets * 0.05; // 5% tolerance
+      const tolerance = assets * 0.05;
       if (diff > tolerance) {
         warnings.push(`Balance sheet doesn't balance: Assets (${this.formatMoney(assets)}) ≠ Liabilities (${this.formatMoney(liabilities)}) + Equity (${this.formatMoney(equity)})`);
       }
@@ -924,9 +970,9 @@ export class AnalystParser {
     }
 
     if (warnings.length > 0) {
-      this.logStep(`⚠️  Found ${warnings.length} validation warnings`);
+      this.logStep(`WARNING: Found ${warnings.length} validation warnings`);
     } else {
-      this.logStep('✓ All validation checks passed');
+      this.logStep('SUCCESS: All validation checks passed');
     }
 
     return warnings;
@@ -940,7 +986,6 @@ export class AnalystParser {
     return `$${value.toFixed(2)}`;
   }
 
-  // ==================== CONFIDENCE CALCULATION ====================
   
   private calculateConfidence(
     financials: AdvancedFinancialDocumentSchema['financials'],

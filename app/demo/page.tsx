@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { getCompanyData, FAANG_SYMBOLS, CompanyData } from '@/lib/api';
 import { runDCF, Assumptions, DCFResult, FORMULAS } from '@/lib/finance';
 import { formatBillions, formatShares, formatPercent, formatWithCommas } from '@/lib/format';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { AreaChart, Area, BarChart, Bar, LineChart, Line, ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from 'recharts';
 import { motion, useScroll, useTransform } from 'framer-motion';
 
 const DEFAULT_ASSUMPTIONS: Assumptions = {
@@ -38,6 +38,7 @@ export default function DemoPage() {
   const [error, setError] = useState<string | null>(null);
   const [showFormulas, setShowFormulas] = useState(false);
   const [modal, setModal] = useState<ModalData | null>(null);
+  const [monteCarloMatrix, setMonteCarloMatrix] = useState<number[][] | null>(null);
   
   const containerRef = useRef<HTMLDivElement>(null);
   const { scrollYProgress } = useScroll({
@@ -416,7 +417,7 @@ export default function DemoPage() {
             background: 'rgba(220, 38, 38, 0.1)', 
             border: '1px solid rgba(220, 38, 38, 0.3)' 
           }}>
-            <p style={{ fontSize: '1.25rem', color: '#ef4444', marginBottom: '1rem' }}>⚠️ Error loading data</p>
+            <p style={{ fontSize: '1.25rem', color: '#ef4444', marginBottom: '1rem' }}>Error loading data</p>
             <p style={{ fontSize: '1rem', color: '#999' }}>{error}</p>
             <button
               onClick={() => {
@@ -707,60 +708,114 @@ export default function DemoPage() {
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                 <thead>
                   <tr style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.1)' }}>
-                    <th style={{ padding: '1rem', textAlign: 'left', color: '#999' }}>Year</th>
-                    <th style={{ padding: '1rem', textAlign: 'right', color: '#999' }}>Revenue</th>
-                    <th style={{ padding: '1rem', textAlign: 'right', color: '#999' }}>EBIT</th>
-                    <th style={{ padding: '1rem', textAlign: 'right', color: '#999' }}>FCF</th>
-                    <th style={{ padding: '1rem', textAlign: 'right', color: '#999' }}>PV(FCF)</th>
+                    <th style={{ padding: '1rem', textAlign: 'left', color: '#999' }}>Metric</th>
+                    {result.forecast.map(year => (
+                      <th key={year.year} style={{ padding: '1rem', textAlign: 'right', color: '#999' }}>Year {year.year}</th>
+                    ))}
+                    <th style={{ padding: '1rem', textAlign: 'right', color: '#999' }}>Terminal</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {result.forecast.map(year => (
-                    <tr key={year.year} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.05)' }}>
-                      <td style={{ padding: '1rem' }}>{year.year}</td>
-                      <td style={{ padding: '1rem', textAlign: 'right' }}>{formatBillions(year.revenue)}</td>
-                      <td style={{ padding: '1rem', textAlign: 'right' }}>{formatBillions(year.ebit)}</td>
-                      <td style={{ padding: '1rem', textAlign: 'right' }}>{formatBillions(year.fcf)}</td>
-                      <td style={{ padding: '1rem', textAlign: 'right' }}>{formatBillions(year.pv)}</td>
-                    </tr>
-                  ))}
-                  <tr style={{ borderTop: '2px solid rgba(255, 255, 255, 0.2)', background: 'rgba(255,255,255,0.03)' }}>
-                    <td style={{ padding: '1rem', fontWeight: '600' }}>Terminal</td>
+                  <tr style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.05)' }}>
+                    <td style={{ padding: '1rem', fontWeight: '500' }}>Revenue</td>
+                    {result.forecast.map(year => (
+                      <td key={year.year} style={{ padding: '1rem', textAlign: 'right' }}>{formatBillions(year.revenue)}</td>
+                    ))}
                     <td style={{ padding: '1rem', textAlign: 'right' }}>-</td>
+                  </tr>
+                  <tr style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.05)' }}>
+                    <td style={{ padding: '1rem', fontWeight: '500' }}>EBIT</td>
+                    {result.forecast.map(year => (
+                      <td key={year.year} style={{ padding: '1rem', textAlign: 'right' }}>{formatBillions(year.ebit)}</td>
+                    ))}
                     <td style={{ padding: '1rem', textAlign: 'right' }}>-</td>
+                  </tr>
+                  <tr style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.05)' }}>
+                    <td style={{ padding: '1rem', fontWeight: '500' }}>FCF</td>
+                    {result.forecast.map(year => (
+                      <td key={year.year} style={{ padding: '1rem', textAlign: 'right' }}>{formatBillions(year.fcf)}</td>
+                    ))}
                     <td style={{ padding: '1rem', textAlign: 'right', fontWeight: '600' }}>{formatBillions(result.terminalValue)}</td>
+                  </tr>
+                  <tr style={{ borderTop: '2px solid rgba(255, 255, 255, 0.2)', background: 'rgba(255,255,255,0.03)' }}>
+                    <td style={{ padding: '1rem', fontWeight: '600' }}>PV(FCF)</td>
+                    {result.forecast.map(year => (
+                      <td key={year.year} style={{ padding: '1rem', textAlign: 'right', fontWeight: '600' }}>{formatBillions(year.pv)}</td>
+                    ))}
                     <td style={{ padding: '1rem', textAlign: 'right', fontWeight: '600' }}>{formatBillions(result.pvTerminal)}</td>
                   </tr>
                 </tbody>
               </table>
             </div>
 
-            <h3 style={{ fontSize: '1.5rem', fontWeight: '600', marginBottom: '1.5rem' }}>FCF Growth Chart</h3>
+            <h3 style={{ fontSize: '1.5rem', fontWeight: '600', marginBottom: '1.5rem' }}>
+              FCF Growth Chart
+            </h3>
             <div className="glass" style={{ padding: '2rem', borderRadius: '12px' }}>
-              <ResponsiveContainer width="100%" height={300}>
-                <AreaChart data={result.forecast.map(y => ({ year: `Year ${y.year}`, fcf: y.fcf / 1e9, pv: y.pv / 1e9 }))}>
+              <ResponsiveContainer width="100%" height={350}>
+                <ComposedChart data={result.forecast.map(y => {
+                  const equityValue = result.equityValue || result.enterpriseValue || 1;
+                  const fcfYield = (y.fcf / equityValue) * 100;
+                  return { 
+                    year: `Year ${y.year}`, 
+                    fcf: y.fcf / 1e9, 
+                    fcfYield: fcfYield,
+                    equityValue: equityValue / 1e9
+                  };
+                })}>
                   <defs>
-                    <linearGradient id="colorFcf" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#ffffff" stopOpacity={0.8}/>
-                      <stop offset="95%" stopColor="#ffffff" stopOpacity={0}/>
-                    </linearGradient>
-                    <linearGradient id="colorPv" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#888888" stopOpacity={0.8}/>
-                      <stop offset="95%" stopColor="#888888" stopOpacity={0}/>
+                    <linearGradient id="colorEquity" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#60a5fa" stopOpacity={0.8}/>
+                      <stop offset="95%" stopColor="#60a5fa" stopOpacity={0.1}/>
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.15)" />
                   <XAxis dataKey="year" stroke="#999" style={{ fontSize: '0.875rem' }} />
-                  <YAxis stroke="#999" label={{ value: 'Billions USD', angle: -90, position: 'insideLeft', fill: '#999' }} style={{ fontSize: '0.875rem' }} />
+                  <YAxis 
+                    yAxisId="left"
+                    stroke="#10b981"
+                    label={{ value: 'Free Cash Flow Yield (%)', angle: -90, position: 'insideLeft', fill: '#10b981' }} 
+                    style={{ fontSize: '0.875rem' }}
+                  />
+                  <YAxis 
+                    yAxisId="right"
+                    orientation="right"
+                    stroke="#60a5fa"
+                    label={{ value: 'Free Cash Flow (Billions USD)', angle: 90, position: 'insideRight', fill: '#60a5fa' }} 
+                    style={{ fontSize: '0.875rem' }}
+                  />
                   <Tooltip 
                     contentStyle={{ background: 'rgba(0,0,0,0.9)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: '8px', padding: '0.75rem' }}
                     labelStyle={{ color: '#fff', marginBottom: '0.5rem' }}
-                    formatter={(value: number) => `$${value.toFixed(2)} B`}
+                    formatter={(value: number, name: string) => {
+                      if (name === 'fcfYield') return `${value.toFixed(2)}%`;
+                      if (name === 'equityValue') return `$${value.toFixed(2)} B`;
+                      return `$${value.toFixed(2)} B`;
+                    }}
                   />
                   <Legend wrapperStyle={{ paddingTop: '1rem' }} />
-                  <Area type="monotone" dataKey="fcf" stroke="#ffffff" strokeWidth={2} fillOpacity={1} fill="url(#colorFcf)" name="Free Cash Flow" />
-                  <Area type="monotone" dataKey="pv" stroke="#888888" strokeWidth={2} fillOpacity={1} fill="url(#colorPv)" name="Present Value" />
-                </AreaChart>
+                  <Bar yAxisId="right" dataKey="fcf" fill="#f97316" name="Free Cash Flow" radius={[4, 4, 0, 0]} />
+                  <Line 
+                    yAxisId="left" 
+                    type="monotone" 
+                    dataKey="fcfYield" 
+                    stroke="#10b981" 
+                    strokeWidth={3}
+                    dot={{ fill: '#10b981', r: 5 }}
+                    activeDot={{ r: 7 }}
+                    name="Free Cash Flow Yield (%)"
+                  />
+                  <Area 
+                    yAxisId="right" 
+                    type="monotone" 
+                    dataKey="equityValue" 
+                    stroke="#60a5fa" 
+                    strokeWidth={2}
+                    fillOpacity={0.2}
+                    fill="url(#colorEquity)" 
+                    name="Equity Value"
+                  />
+                </ComposedChart>
               </ResponsiveContainer>
             </div>
           </motion.section>
@@ -786,7 +841,35 @@ export default function DemoPage() {
               <span style={{ color: '#666', fontSize: '0.8125rem' }}>Hover over cells for details</span>
             </p>
             <div className="glass" style={{ padding: '1.5rem', borderRadius: '12px' }}>
-              <SensitivityHeatmap companyData={companyData} baseAssumptions={assumptions} />
+              <SensitivityHeatmap companyData={companyData} baseAssumptions={assumptions} monteCarloMatrix={monteCarloMatrix} />
+            </div>
+
+            {/* Monte Carlo Simulation */}
+            <div style={{ marginTop: '3rem' }}>
+              <h3 
+                style={{ 
+                  fontSize: '1.5rem', 
+                  fontWeight: '600', 
+                  marginBottom: '1rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                  cursor: 'help'
+                }}
+                title="Monte Carlo Simulation: A statistical method that uses random sampling to model the probability of different outcomes. In finance, it helps assess risk by simulating thousands of possible scenarios with varying WACC and Terminal Growth Rate inputs to estimate the range and distribution of potential stock prices in the sensitivity table above."
+              >
+                Monte Carlo Simulation
+                <span style={{ fontSize: '0.75rem', color: '#666' }}>ⓘ</span>
+              </h3>
+              <p style={{ color: '#999', marginBottom: '1.5rem', fontSize: '0.875rem' }}>
+                Run thousands of simulations with randomized WACC and Terminal Growth Rate to see the sensitivity table update in real-time
+              </p>
+              
+              <MonteCarloSimulation 
+                companyData={companyData} 
+                baseAssumptions={assumptions}
+                onMatrixUpdate={setMonteCarloMatrix}
+              />
             </div>
           </motion.section>
         </>
@@ -802,12 +885,12 @@ export default function DemoPage() {
   );
 }
 
-function SensitivityHeatmap({ companyData, baseAssumptions }: { companyData: CompanyData; baseAssumptions: Assumptions }) {
+function SensitivityHeatmap({ companyData, baseAssumptions, monteCarloMatrix }: { companyData: CompanyData; baseAssumptions: Assumptions; monteCarloMatrix: number[][] | null }) {
   const waccRange = [0.07, 0.08, 0.09, 0.10, 0.11];
   const terminalRange = [0.02, 0.025, 0.03, 0.035, 0.04];
 
-  // testing multiple scenarios because small wacc changes drastically affect valuation
-  const matrix = terminalRange.map(terminal =>
+  // Use Monte Carlo matrix if provided, otherwise calculate standard matrix
+  const matrix = monteCarloMatrix || terminalRange.map(terminal =>
     waccRange.map(wacc => {
       const assumptions = { ...baseAssumptions, wacc, terminalGrowth: terminal };
       const result = runDCF(companyData.revenue, companyData.shares, companyData.cash, companyData.debt, assumptions);
@@ -844,6 +927,11 @@ function SensitivityHeatmap({ companyData, baseAssumptions }: { companyData: Com
               <td style={{ padding: '1rem', color: '#999', fontSize: '0.875rem' }}>{(terminalRange[i] * 100).toFixed(1)}%</td>
               {row.map((price, j) => {
                 const intensity = (price - minPrice) / (maxPrice - minPrice);
+                // Smooth orange gradient: from soft dark orange (low) to soft light orange (high)
+                // Using a warm, muted orange palette
+                const orangeR = Math.round(120 + intensity * 100); // 120 to 220 (soft orange to light orange)
+                const orangeG = Math.round(70 + intensity * 80); // 70 to 150 (muted)
+                const orangeB = Math.round(40 + intensity * 50); // 40 to 90 (warm tone)
                 return (
                   <td
                     key={j}
@@ -851,19 +939,26 @@ function SensitivityHeatmap({ companyData, baseAssumptions }: { companyData: Com
                     style={{
                       padding: '1rem',
                       textAlign: 'center',
-                      background: `rgba(136, 132, 216, ${0.1 + intensity * 0.3})`,
+                      background: `rgb(${orangeR}, ${orangeG}, ${orangeB})`,
+                      color: '#fff',
                       borderRadius: '4px',
                       fontSize: '0.875rem',
                       cursor: 'help',
                       transition: 'all 0.2s',
+                      fontWeight: '500',
                     }}
                     onMouseEnter={(e) => {
-                      e.currentTarget.style.background = `rgba(136, 132, 216, ${0.2 + intensity * 0.4})`;
+                      const hoverR = Math.min(255, orangeR + 30);
+                      const hoverG = Math.min(255, orangeG + 30);
+                      const hoverB = Math.min(255, orangeB + 20);
+                      e.currentTarget.style.background = `rgb(${hoverR}, ${hoverG}, ${hoverB})`;
                       e.currentTarget.style.transform = 'scale(1.05)';
+                      e.currentTarget.style.boxShadow = '0 0 15px rgba(255, 165, 0, 0.4)';
                     }}
                     onMouseLeave={(e) => {
-                      e.currentTarget.style.background = `rgba(136, 132, 216, ${0.1 + intensity * 0.3})`;
+                      e.currentTarget.style.background = `rgb(${orangeR}, ${orangeG}, ${orangeB})`;
                       e.currentTarget.style.transform = 'scale(1)';
+                      e.currentTarget.style.boxShadow = 'none';
                     }}
                   >
                     {formatPrice(price)}
@@ -874,6 +969,196 @@ function SensitivityHeatmap({ companyData, baseAssumptions }: { companyData: Com
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function MonteCarloSimulation({ companyData, baseAssumptions, onMatrixUpdate }: { companyData: CompanyData; baseAssumptions: Assumptions; onMatrixUpdate: (matrix: number[][] | null) => void }) {
+  const [numSimulations, setNumSimulations] = useState(1000);
+  const [isRunning, setIsRunning] = useState(false);
+  const [progress, setProgress] = useState(0);
+
+  const waccRange = [0.07, 0.08, 0.09, 0.10, 0.11];
+  const terminalRange = [0.02, 0.025, 0.03, 0.035, 0.04];
+  const simulationOptions = [100, 1000, 10000, 100000];
+
+  const runSimulation = async () => {
+    setIsRunning(true);
+    setProgress(0);
+    
+    // Initialize matrix with zeros
+    const matrix: number[][] = terminalRange.map(() => waccRange.map(() => 0));
+    const counts: number[][] = terminalRange.map(() => waccRange.map(() => 0));
+    
+    // Update every N simulations based on total count for smooth animation
+    const updateInterval = numSimulations <= 1000 ? 10 : numSimulations <= 10000 ? 100 : 1000;
+    
+    for (let i = 0; i < numSimulations; i++) {
+      // Randomize WACC and Terminal Growth Rate within the ranges
+      const randomWacc = 0.07 + Math.random() * 0.04; // 0.07 to 0.11
+      const randomTerminal = 0.02 + Math.random() * 0.02; // 0.02 to 0.04
+      
+      // Find closest grid cell
+      let waccIndex = waccRange.reduce((closest, wacc, idx) => 
+        Math.abs(wacc - randomWacc) < Math.abs(waccRange[closest] - randomWacc) ? idx : closest, 0
+      );
+      let terminalIndex = terminalRange.reduce((closest, terminal, idx) => 
+        Math.abs(terminal - randomTerminal) < Math.abs(terminalRange[closest] - randomTerminal) ? idx : closest, 0
+      );
+      
+      // Run DCF with randomized WACC and Terminal Growth Rate
+      const randomizedAssumptions: Assumptions = {
+        ...baseAssumptions,
+        wacc: randomWacc,
+        terminalGrowth: randomTerminal,
+      };
+
+      const result = runDCF(
+        companyData.revenue,
+        companyData.shares,
+        companyData.cash,
+        companyData.debt,
+        randomizedAssumptions
+      );
+
+      // Accumulate price in the matrix cell (running average)
+      counts[terminalIndex][waccIndex]++;
+      const currentAvg = matrix[terminalIndex][waccIndex];
+      const newPrice = result.pricePerShare;
+      matrix[terminalIndex][waccIndex] = currentAvg + (newPrice - currentAvg) / counts[terminalIndex][waccIndex];
+
+      // Update progress and matrix in real-time
+      if (i % updateInterval === 0 || i === numSimulations - 1) {
+        const progressPercent = ((i + 1) / numSimulations) * 100;
+        setProgress(progressPercent);
+        
+        // Update the matrix (create new array for reactivity)
+        onMatrixUpdate(matrix.map(row => [...row]));
+
+        // Small delay for animation effect (50ms per update)
+        if (i < numSimulations - 1) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+      }
+    }
+
+    setProgress(100);
+    
+    // Wait a bit before enabling run again
+    setTimeout(() => {
+      setIsRunning(false);
+    }, 500);
+  };
+
+
+  return (
+    <div className="glass" style={{ padding: '2rem', borderRadius: '12px' }}>
+      <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem', flexWrap: 'wrap', alignItems: 'center' }}>
+        <div>
+          <label style={{ display: 'block', marginBottom: '0.5rem', color: '#999', fontSize: '0.875rem' }}>
+            Number of Simulations:
+          </label>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            {simulationOptions.map(option => (
+              <button
+                key={option}
+                onClick={() => !isRunning && setNumSimulations(option)}
+                disabled={isRunning}
+                style={{
+                  padding: '0.5rem 1rem',
+                  borderRadius: '8px',
+                  border: `2px solid ${numSimulations === option ? '#fff' : 'rgba(255,255,255,0.3)'}`,
+                  background: numSimulations === option ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.3)',
+                  color: '#fff',
+                  cursor: isRunning ? 'not-allowed' : 'pointer',
+                  opacity: isRunning ? 0.5 : 1,
+                  transition: 'all 0.2s',
+                  fontSize: '0.875rem',
+                }}
+              >
+                {option.toLocaleString()}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem' }}>
+          <button
+            onClick={() => onMatrixUpdate(null)}
+            disabled={isRunning}
+            style={{
+              padding: '0.75rem 1.5rem',
+              borderRadius: '8px',
+              border: '2px solid rgba(255,255,255,0.3)',
+              background: 'rgba(0,0,0,0.3)',
+              color: '#fff',
+              cursor: isRunning ? 'not-allowed' : 'pointer',
+              fontWeight: '600',
+              fontSize: '1rem',
+              transition: 'all 0.2s',
+              opacity: isRunning ? 0.5 : 1,
+            }}
+          >
+            Reset
+          </button>
+          <button
+            onClick={runSimulation}
+            disabled={isRunning}
+            style={{
+              padding: '0.75rem 2rem',
+              borderRadius: '8px',
+              border: '2px solid #fff',
+              background: isRunning ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.2)',
+              color: '#fff',
+              cursor: isRunning ? 'not-allowed' : 'pointer',
+              fontWeight: '600',
+              fontSize: '1rem',
+              transition: 'all 0.2s',
+            }}
+          >
+            {isRunning ? 'Running...' : 'Run Simulation'}
+          </button>
+        </div>
+      </div>
+
+      {isRunning && (
+        <div style={{ marginBottom: '2rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', alignItems: 'center' }}>
+            <span style={{ color: '#999', fontSize: '0.875rem' }}>Progress</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span style={{ color: '#fff', fontSize: '0.875rem', fontWeight: '600' }}>
+                {Math.round((progress / 100) * numSimulations).toLocaleString()} / {numSimulations.toLocaleString()}
+              </span>
+              <span style={{ color: '#999', fontSize: '0.875rem' }}>{progress.toFixed(1)}%</span>
+              <div style={{
+                width: '12px',
+                height: '12px',
+                borderRadius: '50%',
+                background: '#fff',
+                animation: 'pulse 1s ease-in-out infinite',
+              }} />
+            </div>
+          </div>
+          <div style={{
+            width: '100%',
+            height: '10px',
+            background: 'rgba(255,255,255,0.2)',
+            borderRadius: '5px',
+            overflow: 'hidden',
+          }}>
+            <div style={{
+              width: `${progress}%`,
+              height: '100%',
+              background: 'linear-gradient(90deg, #000, #666, #fff)',
+              transition: 'width 0.1s linear',
+              borderRadius: '5px',
+              boxShadow: '0 0 10px rgba(255,255,255,0.3)',
+            }} />
+          </div>
+          <p style={{ color: '#999', fontSize: '0.75rem', marginTop: '0.5rem', fontStyle: 'italic' }}>
+            Watch the sensitivity table above update in real-time as simulations run...
+          </p>
+        </div>
+      )}
     </div>
   );
 }
