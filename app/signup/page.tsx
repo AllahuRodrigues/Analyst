@@ -66,11 +66,26 @@ export default function SignupPage() {
     }
 
     try {
+      // Determine site URL: use env var if set, otherwise detect from current origin
+      // In production (Vercel), NEXT_PUBLIC_SITE_URL will be set to https://analyst-gold.vercel.app
+      // In local dev, window.location.origin will be http://localhost:3000
+      let siteUrl = 'https://analyst-gold.vercel.app'; // Default to production
+      
+      if (typeof window !== 'undefined') {
+        // If we're on localhost, use localhost
+        if (window.location.origin.includes('localhost')) {
+          siteUrl = window.location.origin;
+        } else {
+          // Otherwise use the env var or current origin
+          siteUrl = process.env.NEXT_PUBLIC_SITE_URL || window.location.origin;
+        }
+      }
+      
       const { data, error } = await supabase.auth.signUp({
         email,
         password,
         options: {
-          emailRedirectTo: `${window.location.origin}/login?verified=true`,
+          emailRedirectTo: `${siteUrl}/login?verified=true`,
           data: {
             first_name: firstName,
             last_name: lastName,

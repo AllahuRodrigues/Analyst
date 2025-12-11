@@ -176,8 +176,21 @@ export default function LoginPage() {
     setError('');
 
     try {
+      // Determine site URL: use env var if set, otherwise detect from current origin
+      let siteUrl = 'https://analyst-gold.vercel.app'; // Default to production
+      
+      if (typeof window !== 'undefined') {
+        // If we're on localhost, use localhost
+        if (window.location.origin.includes('localhost')) {
+          siteUrl = window.location.origin;
+        } else {
+          // Otherwise use the env var or current origin
+          siteUrl = process.env.NEXT_PUBLIC_SITE_URL || window.location.origin;
+        }
+      }
+      
       const { error } = await supabase.auth.resetPasswordForEmail(resetEmail, {
-        redirectTo: `${window.location.origin}/reset-password`,
+        redirectTo: `${siteUrl}/reset-password`,
       });
 
       if (error) throw error;
